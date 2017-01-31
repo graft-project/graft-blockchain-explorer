@@ -10,12 +10,15 @@ class OnionExplorerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.driver = webdriver.Firefox()
+        cls.url = 'http://127.0.0.1:8081/'
 
     def test_title(self):
-        self.driver.get('http://127.0.0.1:8081/')
-        self.assertEqual(
-            self.driver.title,
-            'Onion Monero Blockchain Explorer')
+        self.driver.get(self.url)
+        self.assertEqual(self.driver.title, 'Onion Monero Blockchain Explorer')
+
+    def test_footer(self):
+         self.driver.get(self.url)
+         self.assertIn('source code', self.driver.page_source)
 
     @classmethod
     def tearDownClass(cls):
