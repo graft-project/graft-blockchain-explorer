@@ -1432,7 +1432,7 @@ namespace xmreg
 
             if (xmr_address_str.empty())
             {
-                return string("Monero address not provided!");
+                return string("Graft address not provided!");
             }
 
             if (viewkey_str.empty())
@@ -4535,7 +4535,7 @@ namespace xmreg
             if (address_str.empty())
             {
                 j_response["status"]  = "error";
-                j_response["message"] = "Monero address not provided";
+                j_response["message"] = "Graft address not provided";
                 return j_response;
             }
 
@@ -4741,7 +4741,7 @@ namespace xmreg
             if (address_str.empty())
             {
                 j_response["status"]  = "error";
-                j_response["message"] = "Monero address not provided";
+                j_response["message"] = "Graft address not provided";
                 return j_response;
             }
 
