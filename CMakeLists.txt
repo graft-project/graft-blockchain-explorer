@@ -101,7 +101,6 @@ set(LIBRARIES
         cryptonote_basic
         daemonizer
         cncrypto
-        blocks
         lmdb
         ringct
         common
