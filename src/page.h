@@ -2,8 +2,8 @@
 // Created by mwo on 8/04/16.
 //
 
-#ifndef CROWXMR_PAGE_H
-#define CROWXMR_PAGE_H
+#ifndef PAGE_H
+#define PAGE_H
 
 
 
@@ -5986,5 +5986,5 @@ namespace xmreg
 }
 
 
-#endif //CROWXMR_PAGE_H
+#endif //PAGE_H
 
