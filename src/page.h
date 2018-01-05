@@ -881,8 +881,8 @@ namespace xmreg
                         {"age"             , age_str},
                         {"hash"            , pod_to_hex(mempool_tx.tx_hash)},
                         {"fee"             , mempool_tx.fee_str},
-                        {"xmr_inputs"      , mempool_tx.xmr_inputs_str},
-                        {"xmr_outputs"     , mempool_tx.xmr_outputs_str},
+                        {"grf_inputs"      , mempool_tx.xmr_inputs_str},
+                        {"grf_outputs"     , mempool_tx.xmr_outputs_str},
                         {"no_inputs"       , mempool_tx.no_inputs},
                         {"no_outputs"      , mempool_tx.no_outputs},
                         {"no_nonrct_inputs", mempool_tx.num_nonrct_inputs},
@@ -1460,6 +1460,13 @@ namespace xmreg
                 cerr << "Cant parse string address: " << xmr_address_str << endl;
                 return string("Cant parse xmr address: " + xmr_address_str);
             }
+            /*
+            cout << "testnet: " << testnet << std::endl;
+            cout << "address: " << xmr_address_str << std::endl;
+            cout << "pub spend key: " << epee::string_tools::pod_to_hex(address.m_spend_public_key) << std::endl;
+            cout << "pub view key: " << epee::string_tools::pod_to_hex(address.m_view_public_key) << std::endl;
+            */
+
 
             // parse string representing given private key
             crypto::secret_key prv_view_key;
@@ -1646,7 +1653,9 @@ namespace xmreg
 
             public_key pub_key = tx_prove ? address.m_view_public_key : txd.pk;
 
-            //cout << "txd.pk: " << pod_to_hex(txd.pk) << endl;
+            // cout << "view_pub_key: " << pod_to_hex(txd.pk) << endl;
+            // cout << "view_pub_key: " << pod_to_hex(pub_key) << endl;
+            // cout << "prive_view_key: " << pod_to_hex(prv_view_key);
 
             if (!generate_key_derivation(pub_key, prv_view_key, derivation))
             {
@@ -1691,8 +1700,10 @@ namespace xmreg
                                   address.m_spend_public_key,
                                   tx_pubkey);
 
-                //cout << pod_to_hex(outp.first.key) << endl;
-                //cout << pod_to_hex(tx_pubkey) << endl;
+                /*
+                cout << "output pubkey: " <<  pod_to_hex(outp.first.key) << endl;
+                cout << "tx_pubkey: " <<  pod_to_hex(tx_pubkey) << endl;
+                */
 
                 // check if generated public key matches the current output's key
                 bool mine_output = (outp.first.key == tx_pubkey);
@@ -5158,8 +5169,8 @@ namespace xmreg
                     {"tx_fee"      , txd.fee},
                     {"mixin"       , txd.mixin_no},
                     {"tx_size"     , txd.size},
-                    {"xmr_outputs" , txd.xmr_outputs},
-                    {"xmr_inputs"  , txd.xmr_inputs},
+                    {"grf_outputs" , txd.xmr_outputs},
+                    {"grf_inputs"  , txd.xmr_inputs},
                     {"tx_version"  , static_cast<uint64_t>(txd.version)},
                     {"rct_type"    , tx.rct_signatures.type},
                     {"coinbase"    , is_coinbase(tx)},
