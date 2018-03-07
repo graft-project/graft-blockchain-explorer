@@ -66,7 +66,7 @@ mkdir build && cd build
 # create the makefile
 cmake ..
 
-# altearnatively can use: cmake -DGRAFT_DIR=/path/to/graft_folder .. 
+# altearnatively can use: cmake -DMONERO_DIR=/path/to/graft_folder .. 
 # if graft is not in ~/GraftNetwork
 
 # compile
