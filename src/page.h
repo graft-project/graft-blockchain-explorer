@@ -619,6 +619,13 @@ namespace xmreg
                         continue;
                     }
 
+                    uint64_t blk_diff;
+                    if (!mcore->get_diff_at_height(i, blk_diff))
+                    {
+                        cerr << "Cant get block diff: " << i << endl;
+                        return fmt::format("Cant get block diff {:d}!", i);
+                    }
+
                     uint64_t tx_i {0};
 
                     // this vector will go into block_tx cache
@@ -637,6 +644,7 @@ namespace xmreg
                         txd_map.insert({"height"    , i});
                         txd_map.insert({"blk_hash"  , blk_hash_str});
                         txd_map.insert({"age"       , age.first});
+                        txd_map.insert({"diff"      , blk_diff});
                         txd_map.insert({"is_ringct" , (tx.version > 1)});
                         txd_map.insert({"rct_type"  , tx.rct_signatures.type});
                         txd_map.insert({"blk_size"  , blk_size_str});
@@ -647,6 +655,7 @@ namespace xmreg
                         {
                             txd_map["height"]     = string("");
                             txd_map["age"]        = string("");
+                            txd_map["diff"]       = string("");
                             txd_map["blk_size"]   = string("");
                         }
 
@@ -1007,6 +1016,12 @@ namespace xmreg
                 cerr << "Cant get block: " << _blk_height << endl;
                 return fmt::format("Cant get block {:d}!", _blk_height);
             }
+            uint64_t blk_diff;
+            if (!mcore->get_diff_at_height(_blk_height, blk_diff))
+            {
+                cerr << "Cant get block diff: " << _blk_height << endl;
+                return fmt::format("Cant get block diff {:d}!", _blk_height);
+            }
 
             // get block's hash
             crypto::hash blk_hash = core_storage->get_block_id_by_height(_blk_height);
@@ -1070,6 +1085,7 @@ namespace xmreg
                     {"testnet"              , testnet},
                     {"blk_hash"             , blk_hash_str},
                     {"blk_height"           , _blk_height},
+                    {"diff"             , blk_diff},
                     {"blk_timestamp"        , blk_timestamp},
                     {"blk_timestamp_epoch"  , blk.timestamp},
                     {"prev_hash"            , prev_hash_str},
@@ -4288,6 +4304,12 @@ namespace xmreg
                     j_response["message"] = fmt::format("Cant get block: {:d}", i);
                     return j_response;
                 }
+                uint64_t blk_diff;
+                if (!mcore->get_diff_at_height(i, blk_diff))
+                {
+                    cerr << "Cant get block diff: " << i << endl;
+                    return fmt::format("Cant get block diff {:d}!", i);
+                }
 
                 // get block size in bytes
                 double blk_size = core_storage->get_db().get_block_size(i);
@@ -4301,6 +4323,7 @@ namespace xmreg
                         {"height"       , i},
                         {"hash"         , pod_to_hex(blk_hash)},
                         {"age"          , age.first},
+                        {"diff"         , blk_diff},
                         {"size"         , blk_size},
                         {"timestamp"    , blk.timestamp},
                         {"timestamp_utc", xmreg::timestamp_to_str_gm(blk.timestamp)},

@@ -143,6 +143,45 @@ MicroCore::get_block_by_height(const uint64_t& height, block& blk)
 
 
 
+/** Get the difficulty at the given height */
+bool
+MicroCore::get_diff_at_height(const uint64_t& height, uint64_t& diff)
+{
+    try
+    {
+        diff = m_blockchain_storage.get_db().get_block_difficulty(height);
+    }
+    catch (const BLOCK_DNE& e)
+    {
+        cerr << "Block of height " << height
+             << " not found in the blockchain!"
+             << e.what()
+             << endl;
+
+        return false;
+    }
+    catch (const DB_ERROR& e)
+    {
+        cerr << "Blockchain access error when getting block " << height
+             << e.what()
+             << endl;
+
+        return false;
+    }
+    catch (...)
+    {
+        cerr << "Something went terribly wrong when getting block " << height
+             << endl;
+
+        return false;
+    }
+
+    return true;
+}
+
+
+
+
 /**
  * Get transaction tx from the blockchain using it hash
  */
