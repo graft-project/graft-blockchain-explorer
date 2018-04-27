@@ -5922,6 +5922,14 @@ namespace xmreg
                 age_format = string("[d:h:m:s]");
             }
 
+            // Prefix with - if this is a negative difference (e.g. due to a forged future
+            // timestamp)
+            if (timestamp1 < timestamp2)
+            {
+                age_str = "-" + age_str;
+                age_format = "-" + age_format;
+            }
+
             age_pair.first  = age_str;
             age_pair.second = age_format;
 
