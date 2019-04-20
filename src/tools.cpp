@@ -1178,15 +1178,14 @@ namespace xmreg
     make_tx_from_json(const string& json_str, transaction& tx)
     {
         json j;
-
         try
         {
             j = json::parse(json_str);
         }
-        catch (std::invalid_argument& e)
+        catch (std::exception &e)
         {
-            cerr << "make_tx_from_json: cant parse json string: " << e.what() << endl;
-            return false;
+          cerr << "make_tx_from_json: cant parse json string: " << e.what() << endl;
+          return false;
         }
 
 
