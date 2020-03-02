@@ -6785,7 +6785,19 @@ get_tx_details(const transaction& tx,
     tx_details txd;
 
     // get tx hash
-    txd.hash = get_transaction_hash(tx);
+    
+    if (!tx.pruned)
+    {
+        txd.hash = get_transaction_hash(tx);
+    }
+    else
+    {
+        cerr << "calculating pruned tx hash \n";
+        const blobdata blob = tx_to_blob(tx); 
+        crypto::hash prunable_hash;
+        calculate_transaction_prunable_hash(tx, &blob, prunable_hash);
+        txd.hash = get_pruned_transaction_hash(tx, prunable_hash);
+    }
 
     // get tx public key from extra
     // this check if there are two public keys
