@@ -950,7 +950,7 @@ decode_ringct(rct::rctSig const& rv,
                                         hw::get_device("default"));
                 break;
             default:
-                cerr << "Unsupported rct type: " << rv.type << '\n';
+                cerr << "Unsupported rct type: " << (int)rv.type << '\n';
                 return false;
         }
     }
