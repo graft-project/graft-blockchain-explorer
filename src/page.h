@@ -1337,7 +1337,7 @@ show_block(uint64_t _blk_height)
             {"delta_time"           , delta_time},
             {"blk_nonce"            , blk.nonce},
             {"blk_pow_hash"         , blk_pow_hash_str},
-            {"is_randomx"           , (blk.major_version >= 12)},
+            {"is_randomx"           , (blk.major_version >= 17)},
             {"blk_difficulty"       , blk_difficulty},
             {"age_format"           , age.second},
             {"major_ver"            , std::to_string(blk.major_version)},
