@@ -10,6 +10,13 @@
 #include "mstch/mstch.hpp"
 
 #include "monero_headers.h"
+#include "randomx.h"
+#include "common.hpp"
+#include "blake2/blake2.h"
+#include "virtual_machine.hpp"
+#include "program.hpp"
+#include "aes_hash.hpp"
+#include "assembly_generator_x86.hpp"
 
 #include "../gen/version.h"
 
@@ -29,13 +36,21 @@
 #include "../ext/vpetrigocaches/fifo_cache_policy.hpp"
 #include "../ext/mstch/src/visitor/render_node.hpp"
 
+extern "C" bool rx_needhash(const uint64_t height, uint64_t *seedheight);
+extern "C" void rx_seedhash(const uint64_t seedheight, const char *hash, const int miners);
+extern "C" void rx_slow_hash(const uint64_t mainheight, const uint64_t seedheight, 
+                             const char *seedhash, 
+                             const void *data, size_t length,
+                             char *hash, int miners, int is_alt);
+extern "C" void rx_reorg(const uint64_t split_height);
 
+static  __thread randomx_vm *rx_vm = NULL;
 
 #include <algorithm>
 #include <limits>
 #include <ctime>
 #include <future>
-
+#include <type_traits>
 
 
 #define TMPL_DIR                    "./templates"
@@ -49,6 +64,7 @@
 #define TMPL_HEADER                 TMPL_DIR "/header.html"
 #define TMPL_FOOTER                 TMPL_DIR "/footer.html"
 #define TMPL_BLOCK                  TMPL_DIR "/block.html"
+#define TMPL_RANDOMX                TMPL_DIR "/randomx.html"
 #define TMPL_TX                     TMPL_DIR "/tx.html"
 #define TMPL_ADDRESS                TMPL_DIR "/address.html"
 #define TMPL_MY_OUTPUTS             TMPL_DIR "/my_outputs.html"
@@ -60,16 +76,6 @@
 #define TMPL_MY_CHECKRAWKEYIMGS     TMPL_DIR "/checkrawkeyimgs.html"
 #define TMPL_MY_RAWOUTPUTKEYS       TMPL_DIR "/rawoutputkeys.html"
 #define TMPL_MY_CHECKRAWOUTPUTKEYS  TMPL_DIR "/checkrawoutputkeys.html"
-
-#define JS_JQUERY   TMPL_DIR "/js/jquery.min.js"
-#define JS_CRC32    TMPL_DIR "/js/crc32.js"
-#define JS_BIGINT   TMPL_DIR "/js/biginteger.js"
-#define JS_CONFIG   TMPL_DIR "/js/config.js"
-#define JS_BASE58   TMPL_DIR "/js/base58.js"
-#define JS_CRYPTO   TMPL_DIR "/js/crypto.js"
-#define JS_CNUTIL   TMPL_DIR "/js/cn_util.js"
-#define JS_NACLFAST TMPL_DIR "/js/nacl-fast-cn.js"
-#define JS_SHA3     TMPL_DIR "/js/sha3.js"
 
 #define ONIONEXPLORER_RPC_VERSION_MAJOR 1
 #define ONIONEXPLORER_RPC_VERSION_MINOR 1
@@ -102,6 +108,43 @@ struct tx_info_cache
         }
     };
 };
+
+
+// helper to ignore any number of template parametrs
+template<typename...> using VoidT = void;
+
+// primary template;
+template<typename, typename = VoidT<>>
+struct HasSpanInGetOutputKeyT: std::false_type
+{};
+
+//partial specialization (myy be SFINAEed away)
+template <typename T>
+struct HasSpanInGetOutputKeyT<
+    T, 
+    VoidT<decltype(std::declval<T>()
+            .get_output_key(
+                std::declval<const epee::span<const uint64_t>&>(),
+                std::declval<const std::vector<uint64_t>&>(),
+                std::declval<std::vector<cryptonote::output_data_t>&>()))
+    >>: std::true_type
+{};
+
+
+// primary template;
+template<typename, typename = VoidT<>>
+struct OutputIndicesReturnVectOfVectT : std::false_type 
+{};
+
+template<typename T>
+struct OutputIndicesReturnVectOfVectT<
+    T,
+    VoidT<decltype(std::declval<T>()
+            .get_tx_amount_output_indices(
+                uint64_t{}, size_t{})
+            .front().front())
+    >>: std::true_type 
+{};
 
 // indect overload of hash for tx_info_cache::key
 namespace std
@@ -194,6 +237,70 @@ using namespace std;
 
 using epee::string_tools::pod_to_hex;
 using epee::string_tools::hex_to_pod;
+
+template< typename T >
+std::string as_hex(T i)
+{
+  std::stringstream ss;
+
+  ss << "0x" << setfill ('0') << setw(sizeof(T)*2) 
+         << hex << i;
+  return ss.str();
+}
+
+struct randomx_status
+{
+    randomx::Program prog;
+    randomx::RegisterFile reg_file;
+
+    randomx::AssemblyGeneratorX86 
+    get_asm() 
+    {
+        randomx::AssemblyGeneratorX86 asmX86;
+        asmX86.generateProgram(prog);
+    	return asmX86;
+    }
+
+    mstch::map
+    get_mstch() 
+    {
+        auto asmx86 = get_asm();
+
+        stringstream ss1, ss2;
+
+        ss1 << prog;
+        asmx86.printCode(ss2);
+        
+        mstch::map rx_map {
+            {"rx_code" , ss1.str()},
+            {"rx_code_asm", ss2.str()}
+        };
+
+	for (size_t i = 0; i < randomx::RegistersCount; ++i)
+	{
+	    rx_map["r"+std::to_string(i)] = as_hex(reg_file.r[i]);
+	}
+	
+	for (size_t i = 0; i < randomx::RegistersCount/2; ++i)
+	{
+	    rx_map["f"+std::to_string(i)] = rx_float_as_str(reg_file.f[i]);
+	    rx_map["e"+std::to_string(i)] = rx_float_as_str(reg_file.e[i]);
+	    rx_map["a"+std::to_string(i)] = rx_float_as_str(reg_file.a[i]);
+	}
+
+        return rx_map;
+    }
+
+    string
+    rx_float_as_str(randomx::fpu_reg_t fpu)
+    {
+	uint64_t* lo = reinterpret_cast<uint64_t*>(&fpu.lo);	
+	uint64_t* hi = reinterpret_cast<uint64_t*>(&fpu.hi);	
+
+	return 	 "{" + as_hex(*lo) + ", " + as_hex(*hi)+ "}";
+    }
+};
+
 
 /**
 * @brief The tx_details struct
@@ -366,7 +473,6 @@ bool mainnet;
 bool testnet;
 bool stagenet;
 
-bool enable_js;
 
 bool enable_pusher;
 
@@ -425,7 +531,6 @@ page(MicroCore* _mcore,
      string _deamon_url,
      cryptonote::network_type _nettype,
      bool _enable_pusher,
-     bool _enable_js,
      bool _enable_as_hex,
      bool _enable_key_image_checker,
      bool _enable_output_key_checker,
@@ -445,7 +550,6 @@ page(MicroCore* _mcore,
           server_timestamp {std::time(nullptr)},
           nettype {_nettype},
           enable_pusher {_enable_pusher},
-          enable_js {_enable_js},
           enable_as_hex {_enable_as_hex},
           enable_key_image_checker {_enable_key_image_checker},
           enable_output_key_checker {_enable_output_key_checker},
@@ -466,7 +570,6 @@ page(MicroCore* _mcore,
     testnet = nettype == cryptonote::network_type::TESTNET;
     stagenet = nettype == cryptonote::network_type::STAGENET;
 
-
     no_of_mempool_tx_of_frontpage = 25;
 
     // read template files for all the pages
@@ -481,6 +584,7 @@ page(MicroCore* _mcore,
     template_file["mempool_error"]   = xmreg::read(TMPL_MEMPOOL_ERROR);
     template_file["mempool_full"]    = get_full_page(template_file["mempool"]);
     template_file["block"]           = get_full_page(xmreg::read(TMPL_BLOCK));
+    template_file["randomx"]         = get_full_page(xmreg::read(TMPL_RANDOMX));
     template_file["tx"]              = get_full_page(xmreg::read(TMPL_TX));
     template_file["my_outputs"]      = get_full_page(xmreg::read(TMPL_MY_OUTPUTS));
     template_file["rawtx"]           = get_full_page(xmreg::read(TMPL_MY_RAWTX));
@@ -495,65 +599,6 @@ page(MicroCore* _mcore,
     template_file["tx_details"]      = xmreg::read(string(TMPL_PARIALS_DIR) + "/tx_details.html");
     template_file["tx_table_header"] = xmreg::read(string(TMPL_PARIALS_DIR) + "/tx_table_header.html");
     template_file["tx_table_row"]    = xmreg::read(string(TMPL_PARIALS_DIR) + "/tx_table_row.html");
-
-    if (enable_js) {
-        // JavaScript files
-        template_file["jquery.min.js"]   = xmreg::read(JS_JQUERY);
-        template_file["crc32.js"]        = xmreg::read(JS_CRC32);
-        template_file["crypto.js"]       = xmreg::read(JS_CRYPTO);
-        template_file["cn_util.js"]      = xmreg::read(JS_CNUTIL);
-        template_file["base58.js"]       = xmreg::read(JS_BASE58);
-        template_file["nacl-fast-cn.js"] = xmreg::read(JS_NACLFAST);
-        template_file["sha3.js"]         = xmreg::read(JS_SHA3);
-        template_file["config.js"]       = xmreg::read(JS_CONFIG);
-        template_file["biginteger.js"]   = xmreg::read(JS_BIGINT);
-
-        // need to set  "testnet: false," flag to reflect
-        // if we are running testnet or mainnet explorer
-
-        if (testnet)
-        {
-            template_file["config.js"] = std::regex_replace(
-                    template_file["config.js"],
-                    std::regex("testnet: false"),
-                    "testnet: true");
-        }
-
-        // the same idea as above for the stagenet
-
-        if (stagenet)
-        {
-            template_file["config.js"] = std::regex_replace(
-                    template_file["config.js"],
-                    std::regex("stagenet: false"),
-                    "stagenet: true");
-        }
-
-        template_file["all_in_one.js"] = template_file["jquery.min.js"] +
-                                         template_file["crc32.js"] +
-                                         template_file["biginteger.js"] +
-                                         template_file["config.js"] +
-                                         template_file["nacl-fast-cn.js"] +
-                                         template_file["crypto.js"] +
-                                         template_file["base58.js"] +
-                                         template_file["cn_util.js"] +
-                                         template_file["sha3.js"];
-
-        js_html_files += "<script src=\"/js/jquery.min.js\"></script>";
-        js_html_files += "<script src=\"/js/crc32.js\"></script>";
-        js_html_files += "<script src=\"/js/biginteger.js\"></script>";
-        js_html_files += "<script src=\"/js/config.js\"></script>";
-        js_html_files += "<script src=\"/js/nacl-fast-cn.js\"></script>";
-        js_html_files += "<script src=\"/js/crypto.js\"></script>";
-        js_html_files += "<script src=\"/js/base58.js\"></script>";
-        js_html_files += "<script src=\"/js/cn_util.js\"></script>";
-        js_html_files += "<script src=\"/js/sha3.js\"></script>";
-
-        // /js/all_in_one.js file does not exist. it is generated on the fly
-        // from the above real files.
-        js_html_files_all_in_one = "<script src=\"/js/all_in_one.js\"></script>";
-    }
-
 }
 
 /**
@@ -901,13 +946,15 @@ index2(uint64_t page_no = 0, bool refresh_page = false)
 
     // perapre network info mstch::map for the front page
     string hash_rate;
+    double hr_d;
+    char metric_prefix;
+    cryptonote::difficulty_type hr = make_difficulty(current_network_info.hash_rate, current_network_info.hash_rate_top64);
+    get_metric_prefix(hr, hr_d, metric_prefix);
 
-    if (current_network_info.hash_rate > 1e6)
-        hash_rate = fmt::format("{:0.3f} MH/s", current_network_info.hash_rate/1.0e6);
-    else if (current_network_info.hash_rate > 1e3)
-        hash_rate = fmt::format("{:0.3f} kH/s", current_network_info.hash_rate/1.0e3);
+    if (metric_prefix != 0)
+        hash_rate = fmt::format("{:0.3f} {:c}H/s", hr_d, metric_prefix);
     else
-        hash_rate = fmt::format("{:d} H/s", current_network_info.hash_rate);
+        hash_rate = fmt::format("{:s} H/s", hr.str());
 
     pair<string, string> network_info_age = get_age(local_copy_server_timestamp,
                                                     current_network_info.info_timestamp);
@@ -920,7 +967,7 @@ index2(uint64_t page_no = 0, bool refresh_page = false)
     }
 
     context["network_info"] = mstch::map {
-            {"difficulty"        , current_network_info.difficulty},
+            {"difficulty"        , make_difficulty(current_network_info.difficulty, current_network_info.difficulty_top64).str()},
             {"hash_rate"         , hash_rate},
             {"fee_per_kb"        , print_money(current_network_info.fee_per_kb)},
             {"alt_blocks_no"     , current_network_info.alt_blocks_count},
@@ -1177,7 +1224,6 @@ altblocks()
 string
 show_block(uint64_t _blk_height)
 {
-
     // get block at the given height i
     block blk;
 
@@ -1270,8 +1316,8 @@ show_block(uint64_t _blk_height)
 
     // initalise page tempate map with basic info about blockchain
 
-    string blk_pow_hash_str = pod_to_hex(get_block_longhash(blk, _blk_height));
-    uint64_t blk_difficulty = core_storage->get_db().get_block_difficulty(_blk_height);
+    string blk_pow_hash_str = pod_to_hex(get_block_longhash(core_storage, blk, _blk_height, 0));
+    cryptonote::difficulty_type blk_difficulty = core_storage->get_db().get_block_difficulty(_blk_height);
 
     mstch::map context {
             {"testnet"              , testnet},
@@ -1293,7 +1339,8 @@ show_block(uint64_t _blk_height)
             {"delta_time"           , delta_time},
             {"blk_nonce"            , blk.nonce},
             {"blk_pow_hash"         , blk_pow_hash_str},
-            {"blk_difficulty"       , blk_difficulty},
+            {"is_randomx"           , (blk.major_version >= 12)},
+            {"blk_difficulty"       , blk_difficulty.str()},
             {"age_format"           , age.second},
             {"major_ver"            , std::to_string(blk.major_version)},
             {"minor_ver"            , std::to_string(blk.minor_version)},
@@ -1393,7 +1440,65 @@ show_block(string _blk_hash)
 }
 
 string
-show_tx(string tx_hash_str, uint16_t with_ring_signatures = 0)
+show_randomx(uint64_t _blk_height)
+{
+    // get block at the given height i
+    block blk;
+
+    uint64_t current_blockchain_height
+            =  core_storage->get_current_blockchain_height();
+
+    if (_blk_height > current_blockchain_height)
+    {
+        cerr << "Cant get block: " << _blk_height
+             << " since its higher than current blockchain height"
+             << " i.e., " <<  current_blockchain_height
+             << endl;
+        return fmt::format("Cant get block {:d} since its higher than current blockchain height!",
+                           _blk_height);
+    }
+
+    if (!mcore->get_block_by_height(_blk_height, blk))
+    {
+        cerr << "Cant get block: " << _blk_height << endl;
+        return fmt::format("Cant get block {:d}!", _blk_height);
+    }
+
+    // get block's hash
+    crypto::hash blk_hash = core_storage->get_block_id_by_height(_blk_height);
+    
+    string blk_hash_str  = pod_to_hex(blk_hash);
+
+
+    auto rx_code = get_randomx_code(_blk_height,
+                                    blk, blk_hash);
+
+    mstch::array rx_code_str = mstch::array{};
+    int code_idx {1};
+
+    for (auto& rxc: rx_code)
+    {
+        mstch::map rx_map = rxc.get_mstch();
+        rx_map["first_program"] = (code_idx == 1);
+        rx_map["rx_code_idx"] = code_idx++;
+        rx_code_str.push_back(rx_map);
+    }
+
+    mstch::map context {
+            {"testnet"              , testnet},
+            {"stagenet"             , stagenet},
+            {"blk_hash"             , blk_hash_str},
+            {"blk_height"           , _blk_height},
+            {"rx_codes"             , rx_code_str},
+    };
+    
+    add_css_style(context);
+
+    return mstch::render(template_file["randomx"], context);
+}
+
+string
+show_tx(string tx_hash_str, uint16_t with_ring_signatures = 0, bool refresh_page = false)
 {
 
     // parse tx hash string to hash object
@@ -1607,7 +1712,9 @@ show_tx(string tx_hash_str, uint16_t with_ring_signatures = 0)
             {"testnet"          , this->testnet},
             {"stagenet"         , this->stagenet},
             {"show_cache_times" , show_cache_times},
-            {"txs"              , mstch::array{}}
+            {"txs"              , mstch::array{}},
+            {"refresh"          , refresh_page},
+            {"tx_hash"          , tx_hash_str}
     };
 
     boost::get<mstch::array>(context["txs"]).push_back(tx_context);
@@ -1617,9 +1724,6 @@ show_tx(string tx_hash_str, uint16_t with_ring_signatures = 0)
     };
 
     add_css_style(context);
-
-    if (enable_js)
-        add_js_files(context);
 
     // render the page
     return mstch::render(template_file["tx"], context, partials);
@@ -1736,9 +1840,12 @@ show_ringmembers_hex(string const& tx_hash_str)
                     == false)
                 continue;
 
-            core_storage->get_db().get_output_key(in_key.amount,
-                                                  absolute_offsets,
-                                                  mixin_outputs);
+            //core_storage->get_db().get_output_key(in_key.amount,
+            //                                      absolute_offsets,
+            //                                      mixin_outputs);
+            get_output_key<BlockchainDB>(in_key.amount,
+                                         absolute_offsets,
+                                         mixin_outputs);
         }
         catch (OUTPUT_DNE const& e)
         {
@@ -2024,10 +2131,14 @@ show_ringmemberstx_jsonhex(string const& tx_hash_str)
                         in_key.amount, absolute_offsets, indices);
 
             // get mining ouput info
-            core_storage->get_db().get_output_key(
-                        in_key.amount,
-                        absolute_offsets,
-                        mixin_outputs);
+            //core_storage->get_db().get_output_key(
+                        //in_key.amount,
+                        //absolute_offsets,
+                        //mixin_outputs);
+
+            get_output_key<BlockchainDB>(in_key.amount,
+                                           absolute_offsets,
+                                           mixin_outputs);
         }
         catch (exception const& e)
         {
@@ -2304,8 +2415,8 @@ show_my_outputs(string tx_hash_str,
     string pid_str   = pod_to_hex(txd.payment_id);
     string pid8_str  = pod_to_hex(txd.payment_id8);
 
-    string shortcut_url = domain
-                          + (tx_prove ? "/prove" : "/myoutputs")
+    string shortcut_url = tx_prove 
+                    ? string("/prove") : string("/myoutputs")
                           + '/' + tx_hash_str
                           + '/' + xmr_address_str
                           + '/' + viewkey_str;
@@ -2339,6 +2450,7 @@ show_my_outputs(string tx_hash_str,
             {"payment_id8"          , pid8_str},
             {"decrypted_payment_id8", string{}},
             {"tx_prove"             , tx_prove},
+            {"domain_url"           , domain},
             {"shortcut_url"         , shortcut_url}
     };
 
@@ -2540,9 +2652,13 @@ show_my_outputs(string tx_hash_str,
             if (are_absolute_offsets_good(absolute_offsets, in_key) == false)
                 continue;
 
-            core_storage->get_db().get_output_key(in_key.amount,
-                                                  absolute_offsets,
-                                                  mixin_outputs);
+            //core_storage->get_db().get_output_key(in_key.amount,
+                                                  //absolute_offsets,
+                                                  //mixin_outputs);
+            
+            get_output_key<BlockchainDB>(in_key.amount,
+                                           absolute_offsets,
+                                           mixin_outputs);
         }
         catch (const OUTPUT_DNE& e)
         {
@@ -2991,8 +3107,6 @@ show_checkrawtx(string raw_tx_data, string action)
 
     add_css_style(context);
 
-    if (enable_js)
-        add_js_files(context);
 
     if (unsigned_tx_given)
     {
@@ -3339,8 +3453,6 @@ show_checkrawtx(string raw_tx_data, string action)
 
             add_css_style(context);
 
-            if (enable_js)
-                add_js_files(context);
 
             // render the page
             return mstch::render(template_file["checkrawtx"], context, partials);
@@ -4703,9 +4815,13 @@ json_transaction(string tx_hash_str)
             if (are_absolute_offsets_good(absolute_offsets, in_key) == false)
                 continue;
 
-            core_storage->get_db().get_output_key(in_key.amount,
-                                                  absolute_offsets,
-                                                  outputs);
+            //core_storage->get_db().get_output_key(in_key.amount,
+                                                  //absolute_offsets,
+                                                  //outputs);
+
+            get_output_key<BlockchainDB>(in_key.amount,
+                                           absolute_offsets,
+                                           outputs);
         }
         catch (const OUTPUT_DNE &e)
         {
@@ -6392,9 +6508,13 @@ construct_tx_context(transaction tx, uint16_t with_ring_signatures = 0)
 
             // offsets seems good, so try to get the outputs for the amount and
             // offsets given
-            core_storage->get_db().get_output_key(in_key.amount,
-                                                  absolute_offsets,
-                                                  outputs);
+            //core_storage->get_db().get_output_key(in_key.amount,
+                                                  //absolute_offsets,
+                                                  //outputs);
+            
+            get_output_key<BlockchainDB>(in_key.amount,
+                                           absolute_offsets,
+                                           outputs);
         }
         catch (const std::exception& e)
         {
@@ -6604,8 +6724,11 @@ construct_tx_context(transaction tx, uint16_t with_ring_signatures = 0)
 
         if (core_storage->get_db().tx_exists(txd.hash, tx_index))
         {
-            out_amount_indices = core_storage->get_db()
-                    .get_tx_amount_output_indices(tx_index);
+            //out_amount_indices = core_storage->get_db()
+                    //.get_tx_amount_output_indices(tx_index).front();
+            get_tx_amount_output_indices<BlockchainDB>(
+                   out_amount_indices, 
+                   tx_index);
         }
         else
         {
@@ -6964,7 +7087,7 @@ get_monero_network_info(json& j_info)
        {"current"                   , local_copy_network_info.current},
        {"height"                    , local_copy_network_info.height},
        {"target_height"             , local_copy_network_info.target_height},
-       {"difficulty"                , local_copy_network_info.difficulty},
+       {"difficulty"                , make_difficulty(local_copy_network_info.difficulty, local_copy_network_info.difficulty_top64).str()},
        {"target"                    , local_copy_network_info.target},
        {"hash_rate"                 , local_copy_network_info.hash_rate},
        {"tx_count"                  , local_copy_network_info.tx_count},
@@ -6977,7 +7100,7 @@ get_monero_network_info(json& j_info)
        {"testnet"                   , local_copy_network_info.nettype == cryptonote::network_type::TESTNET},
        {"stagenet"                  , local_copy_network_info.nettype == cryptonote::network_type::STAGENET},
        {"top_block_hash"            , pod_to_hex(local_copy_network_info.top_block_hash)},
-       {"cumulative_difficulty"     , local_copy_network_info.cumulative_difficulty},
+       {"cumulative_difficulty"     , make_difficulty(local_copy_network_info.cumulative_difficulty, local_copy_network_info.cumulative_difficulty_top64).str()},
        {"block_size_limit"          , local_copy_network_info.block_size_limit},
        {"block_size_median"         , local_copy_network_info.block_size_median},
        {"start_time"                , local_copy_network_info.start_time},
@@ -7065,8 +7188,6 @@ void
 add_css_style(mstch::map& context)
 {
     // add_css_style goes to every subpage so here we mark
-    // if js is anabled or not.
-    context["enable_js"] = enable_js;
 
     context["css_styles"] = mstch::lambda{[&](const std::string& text) -> mstch::node {
         return template_file["css_styles"];
@@ -7108,18 +7229,116 @@ get_tx(string const& tx_hash_str,
     return true;
 }
 
-void
-add_js_files(mstch::map& context)
+vector<randomx_status>
+get_randomx_code(uint64_t blk_height, 
+                 block const& blk,
+                 crypto::hash const& blk_hash)
 {
-    context["js_files"] = mstch::lambda{[&](const std::string& text) -> mstch::node {
-        //return this->js_html_files;
-        return this->js_html_files_all_in_one;
-    }};
+    static std::mutex mtx;
+
+    vector<randomx_status> rx_code;
+
+    blobdata bd = get_block_hashing_blob(blk);
+
+    std::lock_guard<std::mutex> lk {mtx};
+
+    if (!rx_vm)
+    {
+        // this will create rx_vm instance if one
+        // does not exist
+        get_block_longhash(core_storage, blk, blk_height, 0);
+
+        if (!rx_vm)
+        {
+            cerr << "rx_vm is still null!";
+            return {};
+        }
+    }
+
+
+     // based on randomx calculate hash
+    // the hash is seed used to generated scrachtpad and program
+    alignas(16) uint64_t tempHash[8];
+    blake2b(tempHash, sizeof(tempHash), bd.data(), bd.size(), nullptr, 0); 
+
+    rx_vm->initScratchpad(&tempHash);
+    rx_vm->resetRoundingMode();
+
+    //    randomx::Program* prg
+    //        = reinterpret_cast<randomx::Program*>(
+    //                reinterpret_cast<char*>(rx_vm) + 64);
+    //
+
+
+    for (int chain = 0; chain < RANDOMX_PROGRAM_COUNT - 1; ++chain) 
+    {
+        rx_vm->run(&tempHash);
+
+        blake2b(tempHash, sizeof(tempHash), 
+                rx_vm->getRegisterFile(), 
+                sizeof(randomx::RegisterFile), nullptr, 0); 
+
+        rx_code.push_back({});
+
+        rx_code.back().prog = rx_vm->getProgram();
+    	rx_code.back().reg_file = *(rx_vm->getRegisterFile());
+    }   
+
+    rx_vm->run(&tempHash);
+
+    rx_code.push_back({});
+
+    rx_code.back().prog = rx_vm->getProgram();
+    rx_code.back().reg_file = *(rx_vm->getRegisterFile());
+
+
+  // crypto::hash res2;
+ //  rx_vm->getFinalResult(res2.data, RANDOMX_HASH_SIZE);
+    
+   // cout << "pow2: " << pod_to_hex(res2) << endl;
+
+    return rx_code;
+}
+
+template <typename T, typename... Args>
+typename std::enable_if<
+    HasSpanInGetOutputKeyT<T>::value, void>::type
+get_output_key(uint64_t amount, Args&&... args)
+{
+  core_storage->get_db().get_output_key(
+          epee::span<const uint64_t>(&amount, 1), 
+          std::forward<Args>(args)...);
+}
+
+template <typename T, typename... Args>
+typename std::enable_if<
+    !HasSpanInGetOutputKeyT<T>::value, void>::type
+get_output_key(uint64_t amount, Args&&... args)
+{
+  core_storage->get_db().get_output_key(
+          amount, std::forward<Args>(args)...);
+}
+
+template <typename T, typename... Args>
+typename std::enable_if<
+    !OutputIndicesReturnVectOfVectT<T>::value, void>::type
+get_tx_amount_output_indices(vector<uint64_t>& out_amount_indices, Args&&... args)
+{
+    out_amount_indices = core_storage->get_db()
+       .get_tx_amount_output_indices(std::forward<Args>(args)...);
+}
+
+template <typename T, typename... Args>
+typename std::enable_if<
+    OutputIndicesReturnVectOfVectT<T>::value, void>::type
+get_tx_amount_output_indices(vector<uint64_t>& out_amount_indices, Args&&... args)
+{
+    out_amount_indices = core_storage->get_db()
+       .get_tx_amount_output_indices(std::forward<Args>(args)...).front();
 }
 
 };
 }
-
 
 #endif //PAGE_H
 

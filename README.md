@@ -5,6 +5,7 @@
 The key features of the Graft Blockchain Explorer are:
 
 - no javascript, no cookies, no web analytics trackers, no images,
+ - no cookies, no web analytics trackers, no images,
  - open sourced,
  - made fully in C++,
  - showing encrypted payments ID,
@@ -12,18 +13,19 @@ The key features of the Graft Blockchain Explorer are:
  - showing transaction extra field,
  - showing public components of Graft addresses,
  - decoding which outputs and mixins belong to the given Graft address and viewkey,
- - can prove that you send Graft to someone,
- - detailed information about mixins, such as, mixins'
- age, timescale, mixin of mixins,
+ - can prove that you send Monero to someone,
+ - detailed information about ring members, such as, their age, timescale and their ring sizes,
  - showing number of amount output indices,
  - support Graft testnet network,
  - tx checker and pusher for online pushing of transactions,
  - estimate possible spendings based on address and viewkey,
- - can provide total amount of all miner fees.
- - decoding encrypted payment id.
+ - can provide total amount of all miner fees,
+ - decoding encrypted payment id,
+ - decoding outputs and proving txs sent to sub-address.
 
 
-## Compilation on Ubuntu 16.04
+
+## Compilation on Ubuntu 16.04/18.04
 
 ##### Compile latest Graft release
 
@@ -42,8 +44,7 @@ git clone https://github.com/graft-project/GraftNetwork
 
 cd GraftNetwork/
 
-make
-```
+USE_SINGLE_BUOLDDIR=1 make
 
 ##### Compile and run the explorer
 
@@ -72,11 +73,6 @@ cmake ..
 # compile
 make
 ```
-
-When compilation finishes executable `grfblocks` should be created. Before running
-please make sure that  `~/Downloads` folder exists and is writable.
-Time zone library that explorer is using, puts there
-its database of time zone offsets
 
 To run it:
 ```
